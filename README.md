@@ -12,3 +12,13 @@ bash <(wget -qO- https://raw.githubusercontent.com/kclzdcat-cell/incus/main/incu
 ```bash
 bash <(wget -qO- https://raw.githubusercontent.com/kclzdcat-cell/incus/main/lxd-nezha.sh)
 ```
+复制下面命令即可一键运行realm转发脚本：
+
+```bash
+bash <(wget -qO- https://raw.githubusercontent.com/kclzdcat-cell/incus/main/realm.sh)
+```
+复制下面命令即可一键运行ipt转发脚本：
+
+```bash
+bash <(wget -qO- https://raw.githubusercontent.com/kclzdcat-cell/incus/main/ipt.sh)
+```
