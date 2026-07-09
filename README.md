@@ -32,3 +32,13 @@ bash <(wget -qO- https://raw.githubusercontent.com/kclzdcat-cell/incus/main/real
 ```bash
 bash <(wget -qO- https://raw.githubusercontent.com/kclzdcat-cell/incus/main/ipt.sh)
 ```
+复制下面命令即可一键运行warp入口部署脚本：
+
+```bash
+bash <(wget -qO- https://raw.githubusercontent.com/kclzdcat-cell/incus/main/warp-in.sh)
+```
+复制下面命令即可一键运行warp出口部署脚本：
+
+```bash
+bash <(wget -qO- https://raw.githubusercontent.com/kclzdcat-cell/incus/main/warp-out.sh)
+```
