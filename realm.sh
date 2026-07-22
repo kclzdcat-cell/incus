@@ -189,10 +189,42 @@ arch_candidates() {
     fi
 }
 
+realm_binary_works() {
+    local bin_path="$1"
+    [[ -x "$bin_path" ]] || return 1
+    "$bin_path" --version >/dev/null 2>&1 || "$bin_path" --help >/dev/null 2>&1
+}
+
+ensure_alpine_gnu_compat() {
+    [[ "$OS_ID" == "alpine" ]] || return 0
+    print_info "正在安装 GNU/glibc 版 realm 所需的 Alpine 兼容运行库"
+    if ! install_packages gcompat libgcc; then
+        print_err "安装 Alpine 兼容运行库 gcompat、libgcc 失败"
+        return 1
+    fi
+}
+
 ensure_realm() {
     if command -v realm >/dev/null 2>&1; then
         REALM_BIN="$(command -v realm)"
-        return 0
+        if realm_binary_works "$REALM_BIN"; then
+            return 0
+        fi
+
+        if [[ "$OS_ID" == "alpine" ]]; then
+            print_warn "检测到 realm 文件存在，但 Alpine 当前无法加载它"
+            ensure_alpine_gnu_compat || return 1
+            if realm_binary_works "$REALM_BIN"; then
+                print_ok "已修复 realm 在 Alpine 上的运行环境"
+                return 0
+            fi
+        fi
+
+        print_warn "现有 realm 无法执行，准备重新安装"
+        if [[ "$REALM_BIN" == "/usr/local/bin/realm" ]]; then
+            rm -f "$REALM_BIN"
+        fi
+        REALM_BIN=""
     fi
 
     print_info "未发现 realm，准备安装"
@@ -260,10 +292,27 @@ ensure_realm() {
         return 1
     fi
 
+    if [[ "$OS_ID" == "alpine" && "$target" == *"-gnu"* ]]; then
+        print_warn "上游未提供当前架构的 musl 包，将使用 GNU 包和 Alpine 兼容运行库"
+        if ! ensure_alpine_gnu_compat; then
+            rm -rf "$tmp_dir"
+            return 1
+        fi
+    fi
+
     cp "$realm_path" /usr/local/bin/realm
     chmod 0755 /usr/local/bin/realm
     rm -rf "$tmp_dir"
     REALM_BIN="/usr/local/bin/realm"
+
+    if ! realm_binary_works "$REALM_BIN"; then
+        rm -f "$REALM_BIN"
+        REALM_BIN=""
+        print_err "realm 安装后仍无法在当前系统执行，已取消启动服务"
+        print_info "请确认 Alpine 软件源中可以安装 gcompat 和 libgcc"
+        return 1
+    fi
+
     print_ok "realm 安装完成（使用 ${target} 版本）"
 }
 
@@ -598,4 +647,15 @@ require_root
 detect_system
 mkdir -p "$BASE_DIR" "$REALM_DIR"
 touch "$RULES_FILE"
+
+# Repair and restart an existing setup immediately. This is important when an
+# older script installed a GNU binary on Alpine without its compatibility loader.
+if [[ -s "$RULES_FILE" ]]; then
+    print_info "检测到已有转发规则，正在检查 realm 并启动服务"
+    if ! apply_service; then
+        print_warn "自动启动失败，可在菜单中查看状态或选择 6 再次刷新"
+        sleep 2
+    fi
+fi
+
 main_menu
