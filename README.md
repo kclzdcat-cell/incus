@@ -17,6 +17,11 @@ bash <(wget -qO- https://raw.githubusercontent.com/kclzdcat-cell/incus/main/lxd-
 ```bash
 bash <(wget -qO- https://raw.githubusercontent.com/kclzdcat-cell/incus/main/rfw.sh)
 ```
+复制下面命令即可一键运行incus升级检查脚本：
+
+```bash
+bash <(wget -qO- https://raw.githubusercontent.com/kclzdcat-cell/incus/main/incus-check.sh)
+```
 复制下面命令即可一键运行swap脚本：
 
 ```bash
