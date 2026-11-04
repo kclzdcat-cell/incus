@@ -1564,12 +1564,77 @@ def check_ip():
         run('bash','-n',str(path))
         run('bash',str(path))
 
+def validate_backup_shape(c):
+    if not isinstance(c,dict): raise ValueError('备份必须是 sing-box 配置 JSON 对象')
+    for key in ('inbounds','outbounds'):
+        if not isinstance(c.get(key),list): raise ValueError('备份缺少 '+key+' 数组')
+    if not isinstance(c.get('route'),dict) or not isinstance(c.get('dns'),dict):
+        raise ValueError('备份缺少 route 或 dns 配置')
+    if not all(isinstance(o,dict) for o in c['outbounds']): raise ValueError('outbounds 内容无效')
+    if not {'home','split'}.issubset({o.get('tag') for o in c['outbounds']}):
+        raise ValueError('此文件缺少本管理器的 home / split 出口，不能直接恢复')
+
+def export_backup():
+    with open(BASE/'manager.lock','a') as lock:
+        fcntl.flock(lock,fcntl.LOCK_EX)
+        c=json.loads(CONFIG.read_text())
+        validate_backup_shape(c)
+        # Embed local rule sets so Google rules remain available on another host.
+        for rule in c['route'].get('rule_set',[]):
+            if rule.get('type')!='local': continue
+            source=pathlib.Path(rule['path'])
+            if not source.is_absolute():
+                raise ValueError('本地规则路径不是绝对路径，无法可靠导出：'+str(source))
+            fmt=rule.get('format') or ('binary' if source.suffix=='.srs' else 'source')
+            if fmt=='source': data=json.loads(source.read_text())
+            elif fmt=='binary':
+                with tempfile.TemporaryDirectory(prefix='singbox-export-') as temp:
+                    output=pathlib.Path(temp)/'rules.json'
+                    run(BIN,'rule-set','decompile','--output',str(output),str(source))
+                    data=json.loads(output.read_text())
+            else: raise ValueError('不支持的本地规则格式：'+fmt)
+            if not isinstance(data.get('rules'),list): raise ValueError('本地规则内容无效')
+            tag=rule['tag'];rule.clear();rule.update(type='inline',tag=tag,rules=data['rules'])
+        fd,name=tempfile.mkstemp(prefix='singbox-backup-'+time.strftime('%Y%m%d-%H%M%S')+'-',suffix='.json',dir=pathlib.Path.cwd())
+        try:
+            with os.fdopen(fd,'wb') as f:
+                f.write(encode(c));f.flush();os.fsync(f.fileno())
+        except BaseException:
+            pathlib.Path(name).unlink(missing_ok=True);raise
+    print('已导出备份：'+str(pathlib.Path(name).resolve()))
+    print('文件权限 600，包含节点凭据、白名单和排除项；本地规则已内嵌。远程规则保留下载地址。')
+    return pathlib.Path(name)
+
+def restore_backup():
+    directory=pathlib.Path.cwd()
+    files=sorted((p for p in directory.glob('*.json') if p.is_file() and not p.is_symlink() and p.resolve()!=CONFIG.resolve()),key=lambda p:p.name)
+    if not files:
+        print('当前目录没有可恢复的 JSON 文件：'+str(directory));return
+    choice=select('从当前目录恢复：'+str(directory),[p.name for p in files]+['取消，返回菜单'],default=len(files)+1)
+    if choice==len(files)+1: return
+    path=files[choice-1]
+    c=json.loads(path.read_text(encoding='utf-8-sig'))
+    validate_backup_shape(c)
+    if select('恢复 '+path.name+'？当前配置将备份，服务会重启。',['恢复备份','取消'],default=2)!=1: return
+    with open(BASE/'manager.lock','a') as lock:
+        fcntl.flock(lock,fcntl.LOCK_EX)
+        # Existing remote cache path is owned by the installed service.
+        if c.get('experimental',{}).get('cache_file',{}).get('enabled'):
+            cache=c['experimental']['cache_file']
+            cache['path']='/var/lib/sing-box/cache.db'
+            pathlib.Path('/var/lib/sing-box').mkdir(parents=True,exist_ok=True,mode=0o750)
+        apply(c)
+    print('备份恢复成功。原配置备份位于 '+str(BASE)+'，文件名以 backup- 开头。')
+    print('网卡与上游连通性仍需在本机验证；系统禁用 IPv6 时会自动调整 TUN 地址。')
+
 def menu():
     while True:
-        print('\n1 添加域名白名单\n2 查看域名白名单\n3 搜索并删除白名单\n4 查看运行状态\n5 查看日志\n6 IP 质量检测（HTTPS 下载）\n0 退出')
+        print('\n1 添加域名白名单\n2 查看域名白名单\n3 搜索并删除白名单\n4 查看运行状态\n5 查看日志\n6 IP 质量检测（HTTPS 下载）\n7 导出 JSON 备份到当前目录\n8 从当前目录恢复 JSON 备份\n0 退出')
         choice=input('请选择: ').strip()
         try:
             if choice=='0': return
+            if choice=='7': export_backup(); continue
+            if choice=='8': restore_backup(); continue
             if choice=='6':
                 try: check_ip()
                 except KeyboardInterrupt: print('\n检测已中断，返回菜单')
@@ -1636,7 +1701,7 @@ def main():
         with open(BASE/'manager.lock','a') as lock:
             fcntl.flock(lock,fcntl.LOCK_EX); setup()
     else:
-        if not CONFIG.exists(): sys.exit('请先运行安装脚本')
+        if not CONFIG.exists(): print('配置文件不存在：可选择 8 恢复备份，或重新运行安装器。')
         menu()
 
 if __name__=='__main__':
