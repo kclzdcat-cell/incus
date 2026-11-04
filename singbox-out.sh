@@ -1298,6 +1298,8 @@ def node(tag,label):
 
 def build(home,split,iface,google=None):
     home['bind_interface']=iface
+    if split is None:
+        split={'type':'direct','tag':'split','domain_resolver':'bootstrap'}
     split['bind_interface']=iface
     if google is not None: google['bind_interface']=iface
     c = {'log':{'level':'info','timestamp':True},
@@ -1450,7 +1452,8 @@ def setup():
         if select('检测到已有配置',['备份并重新配置','取消安装'],default=2)!=1: raise RuntimeError('已取消安装')
     iface=choose_interface()
     home=node('home','代理1 · 家宽出口')
-    split=node('split','代理2 · 分流出口')
+    split_choice=select('代理2 · 默认分流出口',['添加分流代理','不添加，使用机房直连'],default=2)
+    split=node('split','代理2 · 分流出口') if split_choice==1 else None
     choice=select('是否添加 Google 专用代理？',['添加 Google 专用代理','不添加，按现有白名单分流'],default=2)
     google=node('google','代理3 · Google 出口') if choice==1 else None
     pathlib.Path('/var/lib/sing-box').mkdir(parents=True,exist_ok=True,mode=0o750)
@@ -1509,7 +1512,7 @@ WantedBy=multi-user.target
         if CONFIG.exists(): run('systemctl','restart','sing-box','keep-alive',check=False)
         raise
     run('systemctl','enable','sing-box','keep-alive')
-    print('安装完成。已写入默认家宽白名单。'+('Google 优先走代理3。' if google is not None else '未启用 Google 专用出口，按普通白名单分流。')+'输入 singbox 管理。')
+    print('安装完成。已写入默认家宽白名单。'+('默认出口：分流代理。' if split is not None else '默认出口：机房直连。')+('Google 优先走代理3。' if google is not None else '未启用 Google 专用出口，按普通白名单分流。')+'输入 singbox 管理。')
 
 def menu():
     while True:
