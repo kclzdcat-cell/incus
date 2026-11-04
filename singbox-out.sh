@@ -1237,31 +1237,64 @@ def apply(c):
         candidate.unlink(missing_ok=True)
 
 def ask(label, default=''):
-    v=input(label+(f' [{default}]' if default else '')+': ').strip() or default
-    if not v: raise ValueError('不能为空')
-    return v
+    while True:
+        v=input(label+(f' [{default}]' if default else '')+': ').strip() or default
+        if v: return v
+        print('此项不能为空，请重新输入。')
+
+def select(title,options,default=None):
+    print('\n'+'─'*44)
+    print(title)
+    print('─'*44)
+    for i,label in enumerate(options,1):
+        print(f'  [{i}] {label}'+('（默认）' if i==default else ''))
+    print('─'*44)
+    while True:
+        value=input('请输入选项序号'+(f'，回车选择 {default}' if default else '')+': ').strip()
+        if not value and default is not None: return default
+        if value.isdigit() and 1<=int(value)<=len(options): return int(value)
+        print(f'请输入 1 至 {len(options)} 的序号。')
+
+def validated(label,convert):
+    while True:
+        try: return convert(ask(label))
+        except (ValueError,UnicodeError) as error: print('输入无效：'+str(error)+'，请重新输入。')
+
+def server_host(value):
+    value=value.strip('[]')
+    try: return str(ipaddress.ip_address(value))
+    except ValueError: return domain(value)
+
+def server_port(value):
+    value=int(value)
+    if not 1<=value<=65535: raise ValueError('端口必须在 1–65535 之间')
+    return value
 
 def node(tag,label):
-    print('\n设置'+label+'：1 SOCKS5 / 2 VLESS TCP / 3 Shadowsocks / 4 VLESS Reality')
-    kind=ask('协议序号')
-    if kind not in ('1','2','3','4'): raise ValueError('无效协议')
-    host=ask('服务器 IP 或域名').strip('[]')
-    try: ipaddress.ip_address(host)
-    except ValueError: host=domain(host)
-    port=int(ask('端口'))
-    if not 1<=port<=65535: raise ValueError('端口范围错误')
+    kind=str(select('设置'+label+' · 选择协议',['SOCKS5','VLESS（TCP，无 TLS）','Shadowsocks','VLESS + Reality']))
+    print('\n请输入'+label+'的连接信息：')
+    host=validated('服务器 IP 或域名',server_host)
+    port=validated('端口',server_port)
     o={'type':{'1':'socks','2':'vless','3':'shadowsocks','4':'vless'}[kind], 'tag':tag,'server':host,'server_port':port,'domain_resolver':'bootstrap'}
     if kind=='1':
         o.update(version='5',username=input('用户名（可空）: ').strip(),password=getpass.getpass('密码（可空）: '))
     elif kind=='3':
-        o.update(method=ask('加密方式，例如 aes-256-gcm'),password=getpass.getpass('密码: '))
+        methods=['aes-256-gcm','aes-128-gcm','chacha20-ietf-poly1305','2022-blake3-aes-128-gcm','2022-blake3-aes-256-gcm','2022-blake3-chacha20-poly1305']
+        method=select('选择 Shadowsocks 加密方式',methods+['手动输入其他加密方式'])
+        o['method']=methods[method-1] if method<=len(methods) else ask('加密方式')
+        while True:
+            o['password']=getpass.getpass('密码: ')
+            if o['password']: break
+            print('密码不能为空，请重新输入。')
     else:
-        o.update(uuid=str(uuid.UUID(ask('UUID'))),packet_encoding='xudp',tls={'enabled':kind=='4'})
+        o.update(uuid=validated('UUID',lambda v:str(uuid.UUID(v))),packet_encoding='xudp',tls={'enabled':kind=='4'})
         if kind=='4':
-            o['flow']=input('Flow（回车 xtls-rprx-vision，输入 none 表示无）: ').strip() or 'xtls-rprx-vision'
-            if o['flow']=='none': o.pop('flow')
+            flow=select('选择 Reality Flow',['xtls-rprx-vision','无 Flow'],default=1)
+            if flow==1: o['flow']='xtls-rprx-vision'
             o['tls'].update(server_name=ask('SNI'),utls={'enabled':True,'fingerprint':'chrome'},reality={'enabled':True,'public_key':ask('Reality 公钥'),'short_id':input('Short ID（可空）: ').strip()})
+    print('已录入'+label+'。')
     return o
+
 
 def build(home,split,iface,google=None):
     home['bind_interface']=iface
@@ -1414,15 +1447,12 @@ def setup():
     legacy_plan=legacy_commands(keep_unit) if legacy else []
     if legacy: print('已识别旧版部署：输入节点并检查配置后，将自动清理旧规则，无需重启宿主机。')
     if CONFIG.exists():
-        if input('将替换已有配置（保留备份）。输入 INSTALL 继续: ')!='INSTALL': raise RuntimeError('已取消安装')
+        if select('检测到已有配置',['备份并重新配置','取消安装'],default=2)!=1: raise RuntimeError('已取消安装')
     iface=choose_interface()
-    home=node('home','家宽出口')
-    split=node('split','分流出口')
-    while True:
-        choice=input('是否添加 Google 专用代理？[y/N]: ').strip().lower()
-        if choice in ('','n','no','y','yes'): break
-        print('请输入 y 或 n')
-    google=node('google','Google 全系出口') if choice in ('y','yes') else None
+    home=node('home','代理1 · 家宽出口')
+    split=node('split','代理2 · 分流出口')
+    choice=select('是否添加 Google 专用代理？',['添加 Google 专用代理','不添加，按现有白名单分流'],default=2)
+    google=node('google','代理3 · Google 出口') if choice==1 else None
     pathlib.Path('/var/lib/sing-box').mkdir(parents=True,exist_ok=True,mode=0o750)
     c=build(home,split,iface,google)
     defaults=json.loads((pathlib.Path(__file__).parent/'defaults.json').read_text())
@@ -1524,7 +1554,7 @@ def menu():
                     n=int(selection)
                     if not 1<=n<=len(matches): raise ValueError('序号错误')
                     target=matches[n-1]
-                    if input(f'确认删除 {target}？输入 y: ').lower()!='y': continue
+                    if select(f'确认删除 {target}？',['删除并保存','取消'],default=2)!=1: continue
                     if target in entries: entries.remove(target)
                     set_exclusions(c,exclusions(c)+[target])
                 setlist(c,entries); apply(c); print('已保存并生效。重启服务可能中断现有连接。')
