@@ -1216,7 +1216,33 @@ def encode(c): return (json.dumps(c,ensure_ascii=False,indent=2)+'\n').encode()
 def active():
     return subprocess.run(['systemctl','is-active','--quiet','sing-box']).returncode==0
 
+def align_disabled_ipv6(c):
+    """Remove IPv6 TUN addresses only where the kernel explicitly disables IPv6."""
+    removed=[]
+    root=pathlib.Path('/proc/sys/net/ipv6/conf')
+    def disabled(name):
+        try: return (root/name/'disable_ipv6').read_text().strip()=='1'
+        except OSError: return False
+    globally_disabled=disabled('all') or disabled('default')
+    for inbound in c.get('inbounds',[]):
+        if inbound.get('type')!='tun': continue
+        if not (globally_disabled or disabled(inbound.get('interface_name','tun0'))): continue
+        addresses=inbound.get('address',[])
+        if isinstance(addresses,str): addresses=[addresses]
+        ipv4=[a for a in addresses if ipaddress.ip_interface(a).version==4]
+        ipv6=[a for a in addresses if ipaddress.ip_interface(a).version==6]
+        if ipv6:
+            if not ipv4: raise RuntimeError('IPv6 已禁用且 TUN 没有 IPv4 地址，请先配置 IPv4 TUN 地址')
+            inbound['address']=ipv4;removed.extend(ipv6)
+    if globally_disabled:
+        c.setdefault('dns',{})['strategy']='ipv4_only'
+        for rule in c['dns'].get('rules',[]):
+            if rule.get('action','route')=='route': rule['strategy']='ipv4_only'
+    return removed
+
 def apply(c):
+    removed=align_disabled_ipv6(c)
+    if removed: print('系统已禁用 IPv6，已移除 TUN IPv6 地址：'+', '.join(removed))
     candidate=BASE/'candidate.json'
     atomic(candidate,encode(c))
     try:
@@ -1318,6 +1344,7 @@ def build(home,split,iface,google=None):
         c['route']['rules']=[r for r in c['route']['rules'] if r.get('outbound')!='google']
         c['route']['rule_set']=[r for r in c['route']['rule_set'] if r['tag']!='google-domains']
     c['experimental']={'cache_file':{'enabled':True,'path':'/var/lib/sing-box/cache.db'}}
+    align_disabled_ipv6(c)
     return c
 
 
@@ -1356,6 +1383,10 @@ def setlist(c,domains):
     if manual:
         c['route']['rules'].append({'domain_suffix':manual,'action':'route','outbound':'home'})
         c['dns']['rules'].append({'domain_suffix':manual,'action':'route','server':'dns-home'})
+    # Home-path IPv6 failed in deployment diagnostics; filter only home DNS answers.
+    for rule in c['dns']['rules']:
+        if rule.get('server')=='dns-home': rule['strategy']='ipv4_only'
+
 
 
 def legacy_commands(keep_unit):
@@ -1518,12 +1549,31 @@ WantedBy=multi-user.target
     run('systemctl','enable','sing-box','keep-alive')
     print('安装完成。已写入默认家宽白名单。'+('默认出口：分流代理。' if split is not None else '默认出口：机房直连。')+('Google 优先走代理3。' if google is not None else '未启用 Google 专用出口，按普通白名单分流。')+'输入 singbox 管理。')
 
+def check_ip():
+    print('通过 HTTPS 下载 IPQuality 检测脚本；不修改分流配置。')
+    with tempfile.TemporaryDirectory(prefix='singbox-ipcheck-') as directory:
+        path=pathlib.Path(directory)/'ipquality.sh'
+        run('curl','-4','-fSL','--proto','=https','--proto-redir','=https',
+            '--connect-timeout','10','--max-time','60','--retry','2',
+            'https://IP.Check.Place','-o',str(path))
+        data=path.read_bytes()
+        if not data.strip(): raise RuntimeError('下载内容为空，未执行检测脚本')
+        first=data.splitlines()[0].strip()
+        if first not in (b'#!/bin/bash',b'#!/usr/bin/env bash'):
+            raise RuntimeError('下载内容不是预期的 Bash 脚本，未执行；可能返回了验证页或错误页')
+        run('bash','-n',str(path))
+        run('bash',str(path))
+
 def menu():
     while True:
-        print('\n1 添加域名白名单\n2 查看域名白名单\n3 搜索并删除白名单\n4 查看运行状态\n5 查看日志\n0 退出')
+        print('\n1 添加域名白名单\n2 查看域名白名单\n3 搜索并删除白名单\n4 查看运行状态\n5 查看日志\n6 IP 质量检测（HTTPS 下载）\n0 退出')
         choice=input('请选择: ').strip()
         try:
             if choice=='0': return
+            if choice=='6':
+                try: check_ip()
+                except KeyboardInterrupt: print('\n检测已中断，返回菜单')
+                continue
             if choice=='4': run('systemctl','status','sing-box','keep-alive','--no-pager','-l',check=False); continue
             if choice=='5':
                 try: run('journalctl','-u','sing-box','-n','100','-f',check=False)
@@ -1571,7 +1621,18 @@ def main():
     if os.geteuid()!=0: sys.exit('请使用 sudo singbox')
     BASE.mkdir(parents=True,exist_ok=True)
     os.umask(0o077)
-    if '--setup' in sys.argv:
+    if '--repair-tun' in sys.argv:
+        with open(BASE/'manager.lock','a') as lock:
+            fcntl.flock(lock,fcntl.LOCK_EX)
+            c=json.loads(CONFIG.read_text())
+            removed=align_disabled_ipv6(c)
+            if not removed: raise RuntimeError('未发现 IPv6 禁用与 TUN 地址冲突，未修改；需检查 systemctl cat sing-box 和 TUN 权限')
+            print('检测到冲突的 TUN IPv6 地址：'+', '.join(removed))
+            apply(c)
+            print('TUN 配置修复完成，服务已重启。')
+    elif '--check-ip' in sys.argv:
+        check_ip()
+    elif '--setup' in sys.argv:
         with open(BASE/'manager.lock','a') as lock:
             fcntl.flock(lock,fcntl.LOCK_EX); setup()
     else:
@@ -1591,6 +1652,26 @@ set -euo pipefail
 [ "$(id -u)" = 0 ] || { echo '请用 root 执行'; exit 1; }
 for dep in python3 ip systemctl curl tar; do command -v "$dep" >/dev/null || { echo "缺少依赖: $dep"; exit 1; }; done
 DIR=$(cd -- "$(dirname -- "$0")" && pwd)
+if [ "${1:-}" = "--repair-tun" ]; then
+  python3 "$DIR/singbox.py" --repair-tun
+  if [ -f /usr/local/bin/singbox ]; then
+    cp -p /usr/local/bin/singbox "/etc/sing-box/manager-backup-$(date +%s)-$$.py"
+  fi
+  install -m 0755 "$DIR/singbox.py" /usr/local/bin/singbox
+  echo '管理器已同步升级；后续菜单写配置会检测系统 IPv6 禁用状态。'
+  exit 0
+fi
+if [ "${1:-}" = "--update-manager" ]; then
+  [ -f /etc/sing-box/config.json ] && [ -f /usr/local/bin/singbox ] || { echo '未找到现有管理器，请先完成安装'; exit 1; }
+  python3 - "$DIR/singbox.py" <<'CHECK_MANAGER'
+import sys,pathlib
+compile(pathlib.Path(sys.argv[1]).read_text(),sys.argv[1],'exec')
+CHECK_MANAGER
+  cp -p /usr/local/bin/singbox "/etc/sing-box/manager-backup-$(date +%s)-$$.py"
+  install -m 0755 "$DIR/singbox.py" /usr/local/bin/singbox
+  echo '管理器已更新，节点、白名单及路由配置未改动，也未重启服务。输入 singbox，选择 6 检测。'
+  exit 0
+fi
 VERSION=1.12.15
 case "$(uname -m)" in x86_64) ARCH=amd64;; aarch64|arm64) ARCH=arm64;; *) echo '不支持的架构'; exit 1;; esac
 if [ -x /usr/local/bin/sing-box ]; then
@@ -1608,4 +1689,4 @@ install -m 0755 "$DIR/singbox.py" /usr/local/bin/singbox
 SINGBOX_INSTALL_SH
 
 # ===== 执行安装 =====
-bash "$SINGBOX_STAGE/install.sh"
+bash "$SINGBOX_STAGE/install.sh" "$@"
