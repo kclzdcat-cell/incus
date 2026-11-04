@@ -1374,6 +1374,38 @@ def clean_legacy(commands,undo):
     if re.search(r'lookup 100(?:\s|$)',rules): raise RuntimeError('仍有不属于原脚本的 table 100 引用，停止迁移并回滚')
     print('已清理匹配的旧规则，网络快照：'+str(backup))
 
+def interface_choice(value,interfaces,default):
+    value=value.strip()
+    if not value: return default
+    if value in interfaces: return value
+    if value.isdigit() and 1<=int(value)<=len(interfaces): return interfaces[int(value)-1]
+    raise ValueError('请选择列表中的序号或完整网卡名')
+
+def choose_interface():
+    interfaces=sorted(p.name for p in pathlib.Path('/sys/class/net').iterdir() if p.name!='lo')
+    if not interfaces: raise RuntimeError('未发现网络接口')
+    # Read the main table; the old policy-routing default may point to tun0.
+    default=None
+    result=subprocess.run(['ip','-j','-4','route','show','table','main','default'],capture_output=True,text=True)
+    try:
+        routes=json.loads(result.stdout)
+        for route in sorted(routes,key=lambda r:r.get('metric',0)):
+            if route.get('dev') in interfaces:
+                default=route['dev']; break
+    except (ValueError,TypeError): pass
+    default=default or ('eth0' if 'eth0' in interfaces else interfaces[0])
+    interfaces=[default]+[name for name in interfaces if name!=default]
+    print('请选择机房出口网卡（不要选择容器桥接或 TUN 接口）：')
+    for i,name in enumerate(interfaces,1):
+        print(f'  [{i}] {name}'+('（默认）' if name==default else ''))
+    while True:
+        value=input(f'输入序号或网卡名称，回车使用 {default}: ')
+        try:
+            selected=interface_choice(value,interfaces,default)
+            print('已选择出口网卡：'+selected)
+            return selected
+        except ValueError as error: print(str(error)+'，请重新输入。')
+
 def setup():
     rules=subprocess.check_output(['ip','rule','show'],text=True)
     keep_unit=pathlib.Path('/etc/systemd/system/keep-alive.service')
@@ -1383,10 +1415,7 @@ def setup():
     if legacy: print('已识别旧版部署：输入节点并检查配置后，将自动清理旧规则，无需重启宿主机。')
     if CONFIG.exists():
         if input('将替换已有配置（保留备份）。输入 INSTALL 继续: ')!='INSTALL': raise RuntimeError('已取消安装')
-    interfaces=[p.name for p in pathlib.Path('/sys/class/net').iterdir() if p.name!='lo']
-    print('可用接口：'+', '.join(interfaces))
-    iface=ask('机房出口网卡','eth0')
-    if iface not in interfaces: raise ValueError('网卡不存在')
+    iface=choose_interface()
     home=node('home','家宽出口')
     split=node('split','分流出口')
     while True:
