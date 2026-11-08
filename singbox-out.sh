@@ -1240,7 +1240,26 @@ def align_disabled_ipv6(c):
             if rule.get('action','route')=='route': rule['strategy']='ipv4_only'
     return removed
 
+# Destination ports only; private destinations retain their direct route.
+SPLIT_PORTS=[22,23,25,135,139,445,3389,5900]
+
+def ensure_split_ports(c):
+    if not any(o.get('tag')=='split' for o in c.get('outbounds',[])):
+        raise ValueError('缺少 split 出口，不能应用端口分流')
+    rule={'port':SPLIT_PORTS.copy(),'action':'route','outbound':'split'}
+    rules=c.setdefault('route',{}).setdefault('rules',[])
+    rules[:]=[r for r in rules if r!=rule]
+    # Only the leading DNS capture/private exception may precede the port policy.
+    index=0
+    while index<len(rules):
+        r=rules[index]
+        if r=={'port':53,'action':'hijack-dns'} or r=={'ip_is_private':True,'action':'route','outbound':'direct'}:
+            index+=1
+        else: break
+    rules.insert(index,rule)
+
 def apply(c):
+    ensure_split_ports(c)
     removed=align_disabled_ipv6(c)
     if removed: print('系统已禁用 IPv6，已移除 TUN IPv6 地址：'+', '.join(removed))
     candidate=BASE/'candidate.json'
@@ -1345,6 +1364,7 @@ def build(home,split,iface,google=None):
         c['route']['rule_set']=[r for r in c['route']['rule_set'] if r['tag']!='google-domains']
     c['experimental']={'cache_file':{'enabled':True,'path':'/var/lib/sing-box/cache.db'}}
     align_disabled_ipv6(c)
+    ensure_split_ports(c)
     return c
 
 
@@ -1686,7 +1706,13 @@ def main():
     if os.geteuid()!=0: sys.exit('请使用 sudo singbox')
     BASE.mkdir(parents=True,exist_ok=True)
     os.umask(0o077)
-    if '--repair-tun' in sys.argv:
+    if '--apply-port-policy' in sys.argv:
+        with open(BASE/'manager.lock','a') as lock:
+            fcntl.flock(lock,fcntl.LOCK_EX)
+            c=json.loads(CONFIG.read_text())
+            apply(c)
+            print('目标端口已固定走 split：'+', '.join(map(str,SPLIT_PORTS)))
+    elif '--repair-tun' in sys.argv:
         with open(BASE/'manager.lock','a') as lock:
             fcntl.flock(lock,fcntl.LOCK_EX)
             c=json.loads(CONFIG.read_text())
@@ -1717,6 +1743,15 @@ set -euo pipefail
 [ "$(id -u)" = 0 ] || { echo '请用 root 执行'; exit 1; }
 for dep in python3 ip systemctl curl tar; do command -v "$dep" >/dev/null || { echo "缺少依赖: $dep"; exit 1; }; done
 DIR=$(cd -- "$(dirname -- "$0")" && pwd)
+if [ "${1:-}" = "--apply-port-policy" ]; then
+  python3 "$DIR/singbox.py" --apply-port-policy
+  if [ -f /usr/local/bin/singbox ]; then
+    cp -p /usr/local/bin/singbox "/etc/sing-box/manager-backup-$(date +%s)-$$.py"
+  fi
+  install -m 0755 "$DIR/singbox.py" /usr/local/bin/singbox
+  echo '端口分流已生效，管理器已升级。'
+  exit 0
+fi
 if [ "${1:-}" = "--repair-tun" ]; then
   python3 "$DIR/singbox.py" --repair-tun
   if [ -f /usr/local/bin/singbox ]; then
