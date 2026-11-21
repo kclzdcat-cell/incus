@@ -1,6 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+stage=$(mktemp -d)
+complete=no
+trap 'rc=$?; rm -rf -- "$stage"; if [[ "$complete" != yes && "$rc" == 0 ]]; then echo "安装脚本不完整，请重新下载。" >&2; exit 1; fi' EXIT
+
+cat > "$stage/manager.sh" <<'SINGBOX_RESTART_MANAGER'
+#!/usr/bin/env bash
+set -euo pipefail
+
 command_path=/usr/local/bin/singbox-restart
 unit_dir=/etc/systemd/system
 service=singbox-auto-restart.service
@@ -137,7 +145,10 @@ if [[ ! -f "$unit_dir/$timer" ]]; then
     fresh=yes
 fi
 if [[ ! "${BASH_SOURCE[0]}" -ef "$command_path" ]]; then
-    install -m 0755 "${BASH_SOURCE[0]}" "$command_path"
+    candidate=$(mktemp "${command_path}.XXXXXX")
+    trap 'rm -f -- "$candidate"' EXIT
+    install -m 0755 "${BASH_SOURCE[0]}" "$candidate"
+    mv -f -- "$candidate" "$command_path"
 fi
 
 write_unit "$service" <<EOF
@@ -160,3 +171,13 @@ elif (( $# == 1 )) && systemctl is-active --quiet "$timer"; then
 fi
 show_status
 echo '安装完成。以后输入 singbox-restart 打开管理菜单。'
+# END_SINGBOX_RESTART_MANAGER
+SINGBOX_RESTART_MANAGER
+
+if [[ "$(tail -n 1 "$stage/manager.sh")" != '# END_SINGBOX_RESTART_MANAGER' ]]; then
+    echo '管理器下载不完整，请重新下载后执行。' >&2
+    exit 1
+fi
+bash -n "$stage/manager.sh"
+bash "$stage/manager.sh" "$@"
+complete=yes
