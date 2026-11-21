@@ -7,6 +7,11 @@
 ```bash
 bash <(wget -qO- https://raw.githubusercontent.com/kclzdcat-cell/incus/main/singbox-out.sh)
 ```
+复制下面命令即可一键运行部署自动重启singbox脚本：
+
+```bash
+bash <(wget -qO- https://raw.githubusercontent.com/kclzdcat-cell/incus/main/singbox-auto-restart.sh)
+```
 复制下面命令即可一键运行排查哪吒探针的incus容器：
 
 ```bash
