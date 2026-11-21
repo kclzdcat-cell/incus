@@ -14,6 +14,12 @@ unit_dir=/etc/systemd/system
 service=singbox-auto-restart.service
 timer=singbox-auto-restart.timer
 targets=(sing-box.service keep-alive.service)
+version=1.1.2
+
+if [[ "${1:-}" == --version ]]; then
+    printf 'singbox-restart %s\n' "$version"
+    exit 0
+fi
 
 if (( EUID != 0 )); then
     echo '请以 root 身份运行，或使用 sudo。' >&2
@@ -149,6 +155,10 @@ if [[ ! "${BASH_SOURCE[0]}" -ef "$command_path" ]]; then
     trap 'rm -f -- "$candidate"' EXIT
     install -m 0755 "${BASH_SOURCE[0]}" "$candidate"
     mv -f -- "$candidate" "$command_path"
+    if ! cmp -s -- "${BASH_SOURCE[0]}" "$command_path"; then
+        echo "无法验证已安装的管理器 $command_path。" >&2
+        exit 1
+    fi
 fi
 
 write_unit "$service" <<EOF
@@ -169,8 +179,13 @@ if [[ "$fresh" == yes ]]; then
 elif (( $# == 1 )) && systemctl is-active --quiet "$timer"; then
     systemctl restart "$timer"
 fi
+echo '正在执行安装后的首次重启。'
+if ! systemctl start "$service"; then
+    echo '首次重启失败。请运行 journalctl -u singbox-auto-restart.service -n 50 --no-pager 查看原因。' >&2
+    exit 1
+fi
 show_status
-echo '安装完成。以后输入 singbox-restart 打开管理菜单。'
+printf 'singbox-restart %s 安装完成。输入 singbox-restart 打开管理菜单。\n' "$version"
 # END_SINGBOX_RESTART_MANAGER
 SINGBOX_RESTART_MANAGER
 
