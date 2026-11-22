@@ -207,8 +207,6 @@ cat > "$SINGBOX_STAGE/defaults.json" <<'SINGBOX_DEFAULT_DOMAINS'
     "cloudflaretest.com",
     "cloudflarewarp.com",
     "cloudflareworkers.com",
-    "argotunnel.com",
-    "cfargotunnel.com",
     "trycloudflare.com",
     "workers.dev",
     "pages.dev",
